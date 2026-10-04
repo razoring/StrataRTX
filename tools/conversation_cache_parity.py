@@ -11,7 +11,7 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from serve.server import StrataEngine, child_env
+from serve.server import StrataEngine, child_env, engine_args as server_engine_args
 from serve.frontend import ChatTemplate
 import strata_tokenizer as ST
 
@@ -44,7 +44,8 @@ def state_hashes(text):
 
 def engine_args(cfg, budget, spec):
     # Native IQ packs require verifier capacity >= 2, even for one-token decode.
-    return list(cfg['args']) + [
+    # the server's own arguments: with several GPUs that adds the layer split, which cfg['args'] lacks
+    return server_engine_args(cfg) + [
         '--conversation-cache-mib', str(budget), '--conversation-cache-slots', '4',
         '--prompt-cache', '6', '--adapt-swaps', '0', '--spec', str(max(2, spec)),
         '--mtp-max-t', str(spec), '--suffix-draft', '0', '--spec-min-p', '0']

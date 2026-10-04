@@ -6,9 +6,12 @@
 
 #include <string>
 
+#include <vector>
+
 namespace strata::core {
 
-// Caller synchronizes the device before saving, and after restoring all layers.
+// Each stage is drained on its own device before its running state or K/V is read (saving) or written
+// (restoring); a copy on one card cannot wait for kernels still running on another.
 // include_index is false for the draft layer (its attention has no indexer).
 size_t conversation_kv_bytes(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index);
 // A nonzero unchanged_tokens is valid only for storage retained from an image
@@ -53,10 +56,19 @@ struct ConversationView {
     const std::vector<ConversationCheckpoint>& checkpoints;
     bool cvec;
 };
-bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
+// One stage of a layer split: its session's carve plus the device its running state lives on.
+// Stage 0 is first; `dev` -1 means the caller's current device, so single-GPU parking needs no scope.
+// Checkpoints store one part per stage, and the flat K/V vectors run in this same stage order with the
+// drafter last — an entry is pinned to its stage by position, so host storage stays device-agnostic.
+struct ConversationStage {
+    SessionState* ss;   // read through this in validation, written through it in restore
+    int dev = -1;
+};
+using ConversationStages = std::vector<ConversationStage>;
+bool conversation_snapshot_bytes(const ConversationView& view, const ConversationStages& stages,
                                  const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error);
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
-                                         const SessionState& session, const ModelGeometry& g,
+                                         const ConversationStages& stages, const ModelGeometry& g,
                                          const QsaState& draft, size_t& bytes, std::string& error);
 // The capture estimate includes retained capacity and transient segment directories;
 // only estimate - reuse.bytes() requires additional physical RAM. Capture consumes
@@ -64,15 +76,15 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 // Caller admits the estimate before invoking capture. Allocation failures propagate
 // to the RAM policy; the active session is never modified by capture.
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
-                                const SessionState& session, const ModelGeometry& g,
+                                const ConversationStages& stages, const ModelGeometry& g,
                                 const QsaState& draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
-bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
+bool conversation_snapshot_validate(const SavedConversation& image, const ConversationStages& stages,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 enum class ConversationRestore { restored, invalid, transfer_failed };
 // Invalid images are rejected before any CUDA call/write. Transfer failure may
 // leave partial state: caller MUST NOT continue inference from that session.
-ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
+ConversationRestore conversation_snapshot_restore(const SavedConversation& image, const ConversationStages& stages,
                                                    const ModelGeometry& g, const QsaState& draft,
                                                    std::string& error);
 

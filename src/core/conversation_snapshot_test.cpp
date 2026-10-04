@@ -112,6 +112,7 @@ void full_session(int fmt, int mode, int experts) {
     SessionState ss;
     ss.max_cells=96; ss.qsa_states=&main.state;
     ss.layer_hi=g.n_layers; ss.gdn_alloc=g.n_gdn_layers(); ss.qsa_alloc=g.n_qsa_layers();   // the whole-model carve
+    ConversationStages stages{{&ss, -1}};   // the single-stage case
     std::string err;
     ConversationStateSizes sizes;
     check(conversation_state_sizes(g,sizes,err),"whole-session geometry sizes");
@@ -141,25 +142,25 @@ void full_session(int fmt, int mode, int experts) {
     checkpoints.push_back(std::move(checkpoint));
     const ConversationView view{ids,images,checkpoints,true};
     SavedConversation a,b,restored;
-    check(conversation_snapshot_save(a,view,ss,g,draft.state,err),"capture complete A");
+    check(conversation_snapshot_save(a,view,stages,g,draft.state,err),"capture complete A");
     check(a.checkpoints[0].used == 17,"upstream checkpoint LRU stamp survives capture");
     fill(177);
-    check(conversation_snapshot_save(b,view,ss,g,draft.state,err),"capture complete B");
+    check(conversation_snapshot_save(b,view,stages,g,draft.state,err),"capture complete B");
     check(a.live.dead!=b.live.dead,"different opening-state spare keys in regression fixture");
     auto bad=a; bad.kv.back().k.pop_back();
-    check(conversation_snapshot_restore(bad,ss,g,draft.state,err)==ConversationRestore::invalid,
+    check(conversation_snapshot_restore(bad,stages,g,draft.state,err)==ConversationRestore::invalid,
           "reject invalid late draft before any main-layer write");
-    check(conversation_snapshot_save(restored,view,ss,g,draft.state,err),"capture B after refused restore");
+    check(conversation_snapshot_save(restored,view,stages,g,draft.state,err),"capture B after refused restore");
     check(restored.live.gdn==b.live.gdn && restored.live.dead==b.live.dead &&
           equal(restored.kv[0],b.kv[0]) && equal(restored.kv[1],b.kv[1]),"refusal preserves all tested state");
-    check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore complete A");
-    check(conversation_snapshot_save(restored,view,ss,g,draft.state,err),"capture restored A");
+    check(conversation_snapshot_restore(a,stages,g,draft.state,err)==ConversationRestore::restored,"restore complete A");
+    check(conversation_snapshot_save(restored,view,stages,g,draft.state,err),"capture restored A");
     check(restored.live.gdn==a.live.gdn && restored.live.ple==a.live.ple && restored.live.tails==a.live.tails &&
           restored.live.dead==a.live.dead && restored.live.block_pos==a.live.block_pos &&
           equal(restored.kv[0],a.kv[0]) && equal(restored.kv[1],a.kv[1]),"whole-session A/B/A exactness including spare key");
     check(ss.ple_prev[0]==64 && ss.ple_prev[1]==65,"PLE token window reconstructed");
     for (int64_t dirty : {65, 3, 0}) {
-        check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore growth fixture base");
+        check(conversation_snapshot_restore(a,stages,g,draft.state,err)==ConversationRestore::restored,"restore growth fixture base");
         ConversationKvReuse reuse{a.kv,65,dirty};
         const uint8_t* original = nullptr;
         reuse.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){original=p;return true;});
@@ -170,10 +171,10 @@ void full_session(int fmt, int mode, int experts) {
         cuda_check(cudaMemcpy(main.state.idx_pooled+(ids.size()/4)*g.idx_key_dim,
                               main.state.idx_dead,sizes.dead,cudaMemcpyDeviceToDevice));
         SavedConversation fresh,incremental;
-        check(conversation_snapshot_save(fresh,view,ss,g,draft.state,err),"full capture reference after growth or rewind");
+        check(conversation_snapshot_save(fresh,view,stages,g,draft.state,err),"full capture reference after growth or rewind");
         size_t peak=0,reused=0;
-        check(conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.state,peak,err),"admit incremental capture peak");
-        check(conversation_snapshot_save(incremental,view,ss,g,draft.state,err,std::move(reuse),&reused),"capture with retained pages");
+        check(conversation_snapshot_capture_bytes(reuse,view,stages,g,draft.state,peak,err),"admit incremental capture peak");
+        check(conversation_snapshot_save(incremental,view,stages,g,draft.state,err,std::move(reuse),&reused),"capture with retained pages");
         check(incremental.bytes() <= peak,"incremental allocation stays within admitted bound");
         check(incremental.live.gdn==fresh.live.gdn && incremental.live.ple==fresh.live.ple &&
               incremental.live.dead==fresh.live.dead && equal(incremental.kv[0],fresh.kv[0]) &&
@@ -182,7 +183,7 @@ void full_session(int fmt, int mode, int experts) {
         incremental.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){
             check(p==original,"growth never reallocates the retained payload");return true;
         });
-        check(conversation_snapshot_restore(incremental,ss,g,draft.state,err)==ConversationRestore::restored,"restore segmented incremental snapshot");
+        check(conversation_snapshot_restore(incremental,stages,g,draft.state,err)==ConversationRestore::restored,"restore segmented incremental snapshot");
         uint64_t fingerprint=0;
         check(conversation_kv_verify(incremental.kv.back(),draft.state,g,70,false,fingerprint,err),"incremental draft authoritative and ring read-back");
         ids.resize(65);

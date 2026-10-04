@@ -581,9 +581,11 @@ in a bounded 8 GiB host-RAM cache. This preserves controller/worker histories wh
 their requests alternate; it does not execute requests concurrently. No client session
 ID is required: only exact token/image prefixes with matching steering mode are reused.
 The default budget is 0 (disabled); `--prompt-cache 0` also disables parking.
-The initial shared-core integration supports a single session GPU: combining
-enabled parking with `--layer-split` is rejected before model loading. Ordinary
-upstream layer-split checkpoints remain available with parking disabled. FP16,
+Parking works with `--layer-split` too: a snapshot holds one part per stage (its
+layers' running state, used K/V pages and checkpoints, and the draft-layer K/V on
+the stage that carries it), every part is validated against its own stage before
+anything is written, and each stage is drained, read and restored on its own
+device. FP16,
 INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
 remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
 reported separately from Linux/CUDA evidence.

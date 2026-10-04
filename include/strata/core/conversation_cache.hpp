@@ -25,8 +25,11 @@ struct ConversationCheckpoint {
     std::vector<ConversationImageKey> imgs;
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
-    // Ordinary layer-split checkpoints retain each device's running state.
-    // Whole-session parking is currently single-GPU and rejects these parts.
+    // The carve this payload was saved from. A part can only restore into the stage that owns it:
+    // equal payload sizes alone cannot tell two same-sized carves with different ordinals apart.
+    int64_t layer_lo = 0, layer_hi = 0;
+    // Ordinary layer-split checkpoints retain each device's running state: this checkpoint is stage 0's
+    // part, and `stage_parts` holds one part per later stage in stage order. Parking keeps them too.
     std::vector<ConversationCheckpoint> stage_parts;
 
     size_t bytes() const {
@@ -63,11 +66,11 @@ struct ConversationKvReuse {
 struct SavedConversation {
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
     std::array<int64_t, 18> geometry{};
-    // The session's layer carve the image was captured from ([0, n_layers) on one GPU); restore requires the same.
+    // Stage 0's layer carve the image was captured from ([0, n_layers) on one GPU); restore requires the same.
     int64_t layer_lo = 0, layer_hi = 0;
     ConversationCheckpoint live;
     std::vector<ConversationCheckpoint> checkpoints;
-    std::vector<ConversationKv> kv; // main layers followed by the draft layer
+    std::vector<ConversationKv> kv; // flat in stage order: stage 0's layers, each later stage's, then the draft
     bool cvec = true;
 
     size_t bytes() const {
