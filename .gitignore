@@ -38,3 +38,5 @@ App/*.log
 App/.venv/
 App/__pycache__/
 App/**/__pycache__/
+
+.vscode/
