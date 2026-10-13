@@ -1,53 +1,40 @@
-# Generated, not source: deterministic build products of tools/ (see docs/).
-# tiny-qwen4exp.gguf is ~113 MB, over GitHub's 100 MB file limit -- regenerate with
-#   python tools/make_tiny_model.py
-bench/tiny-*.gguf
-bench/wide-*.gguf
-bench/micro/*.exe
-bench/micro/*.obj
-bench/micro/*.bin
-bench/micro/*.dll
-bench/micro/*.txt
+# Generated, not source
 *.log
-build*/
-pack/
-logs/
-__pycache__/
-.pytest_cache/
+*.obj
+*.exe
+*.dll
+*.bak
 *.pyc
-
-# plan v0.3 P1 (repository hygiene, review E1): profiler captures and large diagnostic dumps stay out of git.
 *.nsys-rep
-
-# Pi harness metadata (local session state, not project source)
 *.sqlite
 *.npz
 *.occ1
 td.log
+out.txt
 
-# created by setup.py on the user's machine
-/.venv/
-/build/
-/third_party/llama.cpp
+# Directories
+__pycache__/
+.pytest_cache/
+.venv/
+build*/
+pack/
+logs/
 /models/
 /packs/
 /mtp/
-/run-*.bat
-/run-*.sh
-/strata-*.json
-/strata-*.log
-/build-strata.bat
 /.strata-mcp/
-
-# image encoder (setup.py --vision): build output and the generated build script
-build-vision*/
-build-vision.bat
-
-# setup.py outputs (engine, downloads) and release builds
-/engine/
-/build-release*/
+/.rocm-win/
+/third_party/llama.cpp
+/third_party/*.zip
 /dist/
 *.done
-/third_party/*.zip
 
-/.rocm-win/
+# App runtime binaries and builds
+App/engine/*.exe
+App/engine/*.bak
+App/*.exe
+App/*.obj
+App/*.log
+App/.venv/
+App/__pycache__/
+App/**/__pycache__/

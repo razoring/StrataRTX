@@ -1,0 +1,60 @@
+{
+ "exe": "engine\\strata.exe",
+ "args": [
+  "--pack",
+  "C:\\Strata-data\\packs\\coder-iq1_m",
+  "--native",
+  "C:\\Strata-data\\models\\coder-IQ1_M\\Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+  "--expert-profile",
+  "data\\expert-profile-coder.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "5",
+  "--spec-min-p",
+  "0.62",
+  "--mtp",
+  "C:\\Strata-data\\mtp\\rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "q4_0",
+  "--vram-reserve-mib",
+  "750",
+  "--pcie-frac",
+  "0",
+  "--pool-workers",
+  "7",
+  "--suffix-draft",
+  "4",
+  "--conversation-cache-mib",
+  "8192",
+  "--conversation-cache-slots",
+  "4"
+ ],
+ "cwd": ".",
+ "tokenizer": "C:\\Strata-data\\packs\\coder-iq1_m\\tokenizer",
+ "model_name": "qwen3.8-flash-next-coder-iq1_m",
+ "log": "strata-coder-iq1_m.log",
+ "lib_dirs": [
+  ".venv\\Lib\\site-packages\\nvidia\\cu13\\bin\\x86_64"
+ ],
+ "port": 8080,
+ "gpu": [
+  0,
+  1
+ ],
+ "gpus_asked": true,
+ "layer_split": "27",
+ "fit_max_tokens": true,
+ "draft_vocab": "en",
+ "env": {
+  "STRATA_ARENA_PIN_GIB": "8",
+  "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+  "STRATA_STAGE_TRIM": "1",
+  "CUDA_P2P_DISABLE": "1",
+  "STRATA_TOPK_CAPACITY_GUARD": "1"
+ }
+}

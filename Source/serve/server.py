@@ -801,6 +801,14 @@ def engine_args(cfg: dict) -> list[str]:
     return learned_profile_args(cfg, args)
 
 
+def set_engine_arg(args: list[str], flag: str, value) -> None:
+    """Set a flag's value in an engine arg list, appending the pair when the flag is not there."""
+    if flag in args:
+        args[args.index(flag) + 1] = str(value)
+    else:
+        args += [flag, str(value)]
+
+
 def profile_shape(path: str) -> tuple[int, int] | None:
     """An expert profile's (layers, experts per layer), from its header (tools/make_profile.py's format), or None
     when the file is missing, is not one or is shorter than the pairs its header promises."""
@@ -952,6 +960,9 @@ class Service:
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
+        self.engine_settings_path = None              # the live engine dials' home (next to the config)
+        self.pending_context = None                   # staged context to apply on next request without restart
+        self.engine_boot_max_context = getattr(self.engine, "max_context", 262144)
         self.fifo = threading.Lock()
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -1169,6 +1180,49 @@ class Service:
                 print(f"[strata] could not save the shared settings: {e}", flush=True)
         return self.shared
 
+    def engine_settings(self) -> dict:
+        """What the web app's engine dials show now: the engine's context and its --prefill spelling."""
+        args = getattr(self.engine, "spawn", (None, []))[1]
+        ctx = self.pending_context or self.engine.max_context
+        boot_max = getattr(self, "engine_boot_max_context", 262144)
+        return {"context": ctx,
+                "prefill": args[args.index("--prefill") + 1] if "--prefill" in args else "auto",
+                "context_options": [c for c in CONTEXT_OPTIONS if c <= boot_max],
+                "prefill_options": list(PREFILL_OPTIONS)}
+
+    def save_engine_settings(self) -> None:
+        """Keep the live engine dials between starts, next to the run config (like the shared Chat settings)."""
+        if self.engine_settings_path:
+            try:
+                Path(self.engine_settings_path).write_text(json.dumps(
+                    {k: v for k, v in self.engine_settings().items() if k in ("context", "prefill")},
+                    indent=1), encoding="utf-8")
+            except OSError as e:
+                print(f"[strata] could not save the engine settings: {e}", flush=True)
+
+    def set_engine_settings(self, req: dict) -> dict:
+        """The web app's engine dials, live: update context without server restarts; applies on next request."""
+        context, prefill = req.get("context"), req.get("prefill")
+        if context is None and prefill is None:
+            return self.engine_settings()
+        if context is not None:
+            if not isinstance(context, int) or isinstance(context, bool) or context not in CONTEXT_OPTIONS:
+                raise ValueError(f"context={context!r}: one of {', '.join(map(str, CONTEXT_OPTIONS))}")
+            boot_max = getattr(self, "engine_boot_max_context", 262144)
+            if context > boot_max:
+                raise ValueError(f"context={context}: exceeds allocated engine boot context ({boot_max})")
+            self.pending_context = context
+            print(f"[strata] context setting staged: {context} tokens (will apply on next request without restart)", flush=True)
+        if prefill is not None:
+            if prefill not in PREFILL_OPTIONS:
+                raise ValueError(f"prefill={prefill!r}: \"auto\" or one of {', '.join(str(x) for x in PREFILL_OPTIONS[1:])}")
+            if hasattr(self.engine, "spawn"):
+                exe, args, cwd, log, env = self.engine.spawn
+                set_engine_arg(args, "--prefill", prefill)
+                self.engine.spawn = (exe, args, cwd, log, env)
+        self.save_engine_settings()
+        return self.engine_settings()
+
     def with_shared(self, req: dict, api: str) -> dict:
         """The request with the shared thinking level and max tokens filled in where it has none of its own."""
         s = self.shared
@@ -1374,6 +1428,16 @@ class Service:
                 for path, _ in encoded:
                     f.write(path.read_bytes())
             self.embeddings.path = combined
+        if self.pending_context is not None:
+            used = len(ids)
+            if self.pending_context < used:
+                print(f"[strata] pending context {self.pending_context} < incoming prompt tokens {used}; "
+                      f"discarding pending setting and retaining {self.engine.max_context}", flush=True)
+                self.pending_context = None
+            else:
+                self.engine.max_context = self.pending_context
+                self.pending_context = None
+                print(f"[strata] live context switched to {self.engine.max_context} tokens without server restart", flush=True)
         if self.engine.max_context <= 0:                # #344: (re)starting, not a prompt that is too long
             raise EngineStarting("the engine is starting (a minute or two); try again shortly")
         room = self.engine.max_context - CTX_SLACK - len(ids)
@@ -2157,6 +2221,10 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
                 return
+            if path == "/engine-settings":
+                if self._authorized():
+                    self._json(200, svc.engine_settings())
+                return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
@@ -2229,6 +2297,8 @@ def make_handler(svc: Service):
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
                 return
+            if path == "/engine-settings" and not self._own_page("engine settings can be changed"):
+                return
             if path == "/unload":                            # give the GPU back now (between requests)
                 try:
                     r = svc.unload()
@@ -2248,6 +2318,9 @@ def make_handler(svc: Service):
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
+                if path == "/engine-settings":
+                    self._json(200, svc.set_engine_settings(req))
+                    return
                 if path in ("/v1/load", "/v1/unload"):
                     if not self._own_page("the model can be loaded or unloaded"):
                         return
@@ -2702,7 +2775,17 @@ def origin_allowed(origin: str, host, names, origins=()) -> bool:
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
-    httpd = Server((host, port), make_handler(svc))
+    httpd = None
+    for attempt in range(15):
+        try:
+            httpd = Server((host, port), make_handler(svc))
+            break
+        except OSError as e:
+            if attempt < 14 and (getattr(e, "winerror", None) == 10048 or "Address already in use" in str(e)):
+                print(f"[strata] port {port} busy (waiting for socket to release, attempt {attempt + 1}/15)...", flush=True)
+                time.sleep(1)
+            else:
+                raise
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
 
@@ -2730,6 +2813,9 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
 
 
 SHARED_KEYS = ("reasoning_effort", "temperature", "top_p", "top_k", "seed", "max_tokens", "experimental_speed_projection")
+
+CONTEXT_OPTIONS = (16384, 32768, 65536, 98304, 131072, 262144)  # the web app's context dial: discrete 16K..256K steps
+PREFILL_OPTIONS = ("auto", 2048, 4096, 8192, 16384, 32768)  # the web app's prefill dial: the engine's --prefill spellings
 
 
 def clean_shared_defaults(d) -> dict:
@@ -2867,6 +2953,22 @@ def main() -> int:
                                           "server's model; also \"before_load\" in the config, a string or a list)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    live_context = None
+    if a.config:
+        try:                                            # the web app's engine dials, from last time
+            live = json.loads(Path(str(Path(a.config).with_suffix("")) + ".engine-settings.json").
+                              read_text(encoding="utf-8"))
+            if isinstance(live, dict) and cfg.get("args"):
+                if live.get("prefill") is not None:
+                    set_engine_arg(cfg["args"], "--prefill", live["prefill"])
+                if live.get("context") is not None:
+                    live_context = live["context"]
+                if live.get("context") or live.get("prefill"):
+                    print("[strata] engine dials from last time: " +
+                          f"context {live.get('context', 'config')}, prefill {live.get('prefill', 'config')}",
+                          flush=True)
+        except (OSError, ValueError):
+            pass                                        # no dials set yet, or a stale file: the config's own
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -2991,6 +3093,9 @@ def main() -> int:
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
+        svc.engine_settings_path = str(Path(a.config).with_suffix("")) + ".engine-settings.json"
+        if live_context and live_context <= getattr(svc, "engine_boot_max_context", live_context):
+            svc.engine.max_context = live_context
         try:
             svc.shared = clean_shared_defaults(json.loads(Path(svc.shared_path).read_text(encoding="utf-8")))
             if svc.shared:
@@ -3044,8 +3149,8 @@ def main() -> int:
             time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
     except KeyboardInterrupt:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
-        closers = [httpd.shutdown, getattr(engine, "close", None), vision.close if vision else None,
-                   hub.close if hub is not None else None]
+        closers = [httpd.shutdown, getattr(httpd, "server_close", None), getattr(engine, "close", None),
+                   vision.close if vision else None, hub.close if hub is not None else None]
         for close in filter(None, closers):
             try:
                 close()
